@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Finance Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root{
+      --border:#e5e7eb; --muted:#6b7280; --text:#111; --bg:#fff; --accent:#2563eb;
+      --pos:#16a34a; --neg:#dc2626;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0; font-family:sans-serif; color:var(--text); background:var(--bg);}
+    button, select, input{padding:4px 6px; font:inherit}
+    a{color:var(--accent); text-decoration:none}
+    a:hover{text-decoration:underline}
+
+    .app{height:100vh; display:grid; grid-template-rows:auto 1fr;}
+    .toolbar{display:flex; gap:10px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--border); background:#fafafa}
+    .toolbar .spacer{margin-left:auto; font-size:12px; color:var(--muted)}
+    .main{display:grid; grid-template-columns: 2fr 1fr; min-height:0}
+
+    .chart-wrap{min-width:0; min-height:0; display:flex; flex-direction:column}
+    #chart{flex:1 1 auto; min-height:200px}
+
+    .side{border-left:1px solid var(--border); display:flex; flex-direction:column; min-width:360px; min-height:0;}
+    .tabs{display:flex; border-bottom:1px solid var(--border); background:#fafafa}
+    .tab-btn{padding:10px 12px; border:0; background:transparent; cursor:pointer; border-bottom:2px solid transparent;}
+    .tab-btn.active{border-color:var(--accent); font-weight:600}
+    .tab-content{flex:1 1 auto; min-height:0; overflow:auto; padding:10px 12px}
+    .news-controls, .bt-controls{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+    .status{margin-left:auto; font-size:12px; color:var(--muted)}
+    table{width:100%; border-collapse:collapse; font-size:13px}
+    th, td{padding:6px 8px; border-top:1px solid var(--border); text-align:left; vertical-align:top}
+    td.num{text-align:right}
+    .pill{font-weight:600}
+    .pill.pos{color:var(--pos)} .pill.neg{color:var(--neg)} .pill.neu{color:var(--muted)}
+    .bt-summary{margin-top:8px; font-size:13px; display:flex; gap:18px; flex-wrap:wrap}
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="toolbar">
+    <span>Symbol:</span>
+    <select id="symbol">
+      <option>BTCUSDT</option>
+      <option>ETHUSDT</option>
+      <option>ADAUSDT</option>
+    </select>
+    <span>TF:</span>
+    <select id="tf">
+      <option value="1m">1m</option>
+      <option value="5m">5m</option>
+      <option value="15m">15m</option>
+    </select>
+    <button id="export">Export CSV</button>
+    <span id="status" class="spacer">Idle</span>
+  </div>
+
+  <div class="main">
+    <div class="chart-wrap">
+      <div id="chart"></div>
+    </div>
+
+    <aside class="side">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="news">News</button>
+        <button class="tab-btn" data-tab="bt">Backtest</button>
+        <span id="side-status" class="status" style="margin-left:auto">Idle</span>
+      </div>
+
+      <div class="tab-content" id="tab-news" role="tabpanel">
+        <div class="news-controls">
+          <strong>Tin mới</strong>
+          <input id="news-q" placeholder="tìm: btc, eth, rate..." />
+          <select id="news-sym">
+            <option value="">(all)</option>
+            <option>BTC</option><option>ETH</option><option>ADA</option>
+          </select>
+          <button id="news-load">Load</button>
+          <span id="news-status" class="status">Idle</span>
+        </div>
+        <table id="news-table">
+          <thead>
+            <tr>
+              <th>Thời gian</th>
+              <th>Nguồn</th>
+              <th>Tiêu đề</th>
+              <th>Sentiment</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="tab-content" id="tab-bt" role="tabpanel" hidden>
+        <div class="bt-controls">
+          <strong>Backtest</strong>
+          <label>Strategy
+            <select id="bt-strategy">
+              <option value="ma_cross">MA30 cross MA90</option>
+              <option value="ma_cross_sent">MA30 cross MA90 + Sentiment≥0</option>
+            </select>
+          </label>
+          <label>Limit
+            <input id="bt-limit" type="number" value="1500" min="200" max="5000" style="width:90px">
+          </label>
+          <label>Fee
+            <input id="bt-fee" type="number" step="0.0001" value="0.0005" style="width:90px">
+          </label>
+          <button id="bt-run">Run</button>
+          <span id="bt-status" class="status">Idle</span>
+        </div>
+
+        <div id="bt-summary" class="bt-summary"></div>
+
+        <div style="margin-top:8px; max-height:50vh; overflow:auto;">
+          <table id="bt-trades">
+            <thead>
+              <tr>
+                <th>Thời gian</th>
+                <th>Action</th>
+                <th class="num">Giá</th>
+                <th class="num">PnL</th>
+                <th class="num">Ghi chú</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const CANDLE_API = "http://localhost:8000";
+  const NEWS_API   = "http://localhost:8100";
+  const BT_API     = "http://localhost:8300";
+
+  // Chart
+  const symbolSel = document.getElementById('symbol');
+  const tfSel = document.getElementById('tf');
+  const statusEl = document.getElementById('status');
+  const chartEl = document.getElementById('chart');
+  const exportBtn = document.getElementById('export');
+  const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
+  const tabNews = document.getElementById('tab-news');
+  const tabBt   = document.getElementById('tab-bt');
+
+  const chart = LightweightCharts.createChart(chartEl, {
+    layout:{ textColor:'#111', background:{type:'Solid', color:'#fff'} },
+    rightPriceScale:{ borderVisible:false },
+    timeScale:{ borderVisible:false, secondsVisible:true }
+  });
+  const series = chart.addCandlestickSeries();
+  const sma30Series = chart.addLineSeries({ lineWidth:2, color:'blue' });
+  const sma90Series = chart.addLineSeries({ lineWidth:2, color:'orange' });
+
+  const ro = new ResizeObserver(() => {
+    chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
+  });
+  ro.observe(chartEl);
+
+  let ws=null, candles=[];
+
+  function setStatus(s){ statusEl.textContent = s; }
+  function upsertCandle(c){
+    if (candles.length && candles.at(-1).time === c.time){
+      candles[candles.length-1] = c;
+    } else {
+      candles.push(c);
+      if (candles.length > 5000) candles.shift();
+    }
+  }
+  function calcSMA(data, period){
+    const out=[];
+    for (let i=period-1;i<data.length;i++){
+      let sum=0;
+      for (let j=0;j<period;j++) sum+=data[i-j].close;
+      out.push({ time:data[i].time, value:sum/period });
+    }
+    return out;
+  }
+
+  async function myApiKlines(symbol, interval, limit=1000){
+    const url = `${CANDLE_API}/candles?symbol=${symbol}&tf=${interval}&limit=${limit}`;
+    const arr = await fetch(url).then(r=>r.json());
+    return arr.map(k => ({ time:k.ts, open:k.o, high:k.h, low:k.l, close:k.c }));
+  }
+  // function connectWS(symbol, interval){
+  //   const stream = `${symbol.toLowerCase()}@kline_${interval}`;
+  //   const url = `wss://stream.binance.com:9443/ws/${stream}`;
+  //   if (ws) { try{ ws.close(); }catch{} }
+  //   ws = new WebSocket(url);
+  //   ws.onopen  = () => setStatus('WS connected');
+  //   ws.onclose = () => setStatus('WS disconnected');
+  //   ws.onmessage = (ev)=>{
+  //     const data=JSON.parse(ev.data);
+  //     if(!data.k) return;
+  //     const k=data.k;
+  //     const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c};
+  //     series.update(c); upsertCandle(c);
+  //     const s30=calcSMA(candles,30).slice(-1)[0]; if(s30) sma30Series.update(s30);
+  //     const s90=calcSMA(candles,90).slice(-1)[0]; if(s90) sma90Series.update(s90);
+  //   };
+  // }
+
+  function connectWS(symbol, interval){
+    const url = `ws://localhost:8400/ws?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(interval)}`;
+    if (ws) { try{ ws.close(1000,'reconnect'); }catch(_){} }
+    ws = new WebSocket(url);
+    let timer;
+
+    ws.onopen  = () => { clearTimeout(timer); setStatus('WS connected (internal)'); };
+    ws.onclose = () => {
+      setStatus('WS disconnected – reconnecting…');
+      timer = setTimeout(() => connectWS(symbol, interval), 3000);
+    };
+    ws.onerror = () => { /* bỏ qua; onclose sẽ lo reconnect */ };
+
+    ws.onmessage = (ev) => {
+      const m = JSON.parse(ev.data);
+      if (m.type === 'ping') return;
+      const c = { time:m.time, open:m.open, high:m.high, low:m.low, close:m.close };
+      series.update(c); upsertCandle(c);
+      const s30=calcSMA(candles,30).slice(-1)[0]; if(s30) sma30Series.update(s30);
+      const s90=calcSMA(candles,90).slice(-1)[0]; if(s90) sma90Series.update(s90);
+    };
+  }
+
+
+
+  async function load(symbol, interval){
+    setStatus('Loading history…');
+    if(ws){ try{ws.close()}catch{} ws=null; }
+    candles=[];
+    series.setData([]); sma30Series.setData([]); sma90Series.setData([]);
+    const hist=await myApiKlines(symbol, interval, 1000);
+    candles=hist;
+    series.setData(candles);
+    sma30Series.setData(calcSMA(candles,30));
+    sma90Series.setData(calcSMA(candles,90));
+    setStatus('History loaded. Connecting WS…');
+    connectWS(symbol, interval);
+  }
+
+  symbolSel.addEventListener('change', ()=>load(symbolSel.value, tfSel.value));
+  tfSel.addEventListener('change', ()=>load(symbolSel.value, tfSel.value));
+  exportBtn.addEventListener('click', ()=>{
+    if(!candles.length){alert("Chưa có dữ liệu"); return;}
+    const lines=["time,open,high,low,close"];
+    candles.forEach(c=> lines.push([c.time,c.open,c.high,c.low,c.close].join(",")));
+    const blob=new Blob([lines.join("\n")],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=`${symbolSel.value}_${tfSel.value}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  load(symbolSel.value, tfSel.value);
+
+  // Tabs
+  function showTab(name){
+    tabButtons.forEach(b=>b.classList.toggle('active', b.dataset.tab===name));
+    tabNews.hidden = name!=='news';
+    tabBt.hidden   = name!=='bt';
+  }
+  tabButtons.forEach(b=> b.addEventListener('click',()=>showTab(b.dataset.tab)));
+
+  // News
+  const newsBtn=document.getElementById('news-load');
+  const newsQ=document.getElementById('news-q');
+  const newsSym=document.getElementById('news-sym');
+  const newsBody=document.querySelector('#news-table tbody');
+  const newsStatus=document.getElementById('news-status');
+  function pill(label){
+    const cls=label==='positive'?'pos':label==='negative'?'neg':'neu';
+    return `<span class="pill ${cls}">${label||'neutral'}</span>`;
+  }
+  function tsToLocal(ts){ return new Date(ts*1000).toLocaleString(); }
+  async function loadNews(){
+    newsStatus.textContent='Loading…';
+    const params=new URLSearchParams({limit:'30'});
+    if(newsQ.value.trim()) params.set('q', newsQ.value.trim());
+    if(newsSym.value.trim()) params.set('symbol', newsSym.value.trim());
+    const url=`${NEWS_API}/news?${params}`;
+    const arr=await fetch(url).then(r=>r.json());
+    newsBody.innerHTML=arr.map(it=>`
+      <tr>
+        <td>${it.published_at?tsToLocal(it.published_at):''}</td>
+        <td>${it.source_name||''}</td>
+        <td><a href="${it.url}" target="_blank">${it.title}</a></td>
+        <td>${pill(it.sentiment_label)}</td>
+      </tr>`).join('');
+    newsStatus.textContent=`Loaded ${arr.length} items`;
+  }
+  newsBtn.addEventListener('click', loadNews);
+  loadNews();
+
+  // Backtest
+  const runBtn=document.getElementById('bt-run');
+  const stratEl=document.getElementById('bt-strategy');
+  const limitEl=document.getElementById('bt-limit');
+  const feeEl=document.getElementById('bt-fee');
+  const btStatus=document.getElementById('bt-status');
+  const sumEl=document.getElementById('bt-summary');
+  const tbody=document.querySelector('#bt-trades tbody');
+  function fmtPct(x){return (x*100).toFixed(2)+'%';}
+  function fmtNum(x,d=2){return Number(x).toFixed(d);}
+  async function runBacktest(){
+    btStatus.textContent='Running…';
+    const params=new URLSearchParams({
+      symbol:symbolSel.value,
+      tf:tfSel.value,
+      rule:stratEl.value,
+      limit:limitEl.value,
+      fee:feeEl.value
+    });
+    const url=`${BT_API}/backtest?${params}`;
+    const data=await fetch(url).then(r=>r.json());
+    if(data.error){btStatus.textContent='Error'; return;}
+    sumEl.innerHTML=`
+      <div>Symbol:<b>${data.summary.symbol}</b> TF:<b>${data.summary.tf}</b> Rule:<b>${data.summary.rule}</b></div>
+      <div>Số lệnh:<b>${data.summary.n_trades}</b> Win:<b>${data.summary.win}</b> Loss:<b>${data.summary.loss}</b> Winrate:<b>${fmtPct(data.summary.winrate)}</b></div>
+      <div>Total Return:<b>${fmtPct(data.summary.total_return)}</b> Equity End:<b>${fmtNum(data.summary.equity_end,4)}</b> Sharpe:<b>${fmtNum(data.summary.sharpe_like,3)}</b></div>
+    `;
+    tbody.innerHTML=data.trades.map(it=>`
+      <tr>
+        <td>${tsToLocal(it.time)}</td>
+        <td>${it.action}</td>
+        <td class="num">${fmtNum(it.price)}</td>
+        <td class="num">${it.pnl?fmtPct(it.pnl):''}</td>
+        <td class="num">${it.sent_mean?('sent_mean='+fmtNum(it.sent_mean,3)):''}</td>
+      </tr>`).join('');
+    btStatus.textContent='Done';
+  }
+  runBtn.addEventListener('click', runBacktest);
+  symSel.addEventListener('change', runBacktest);
+  tfSel.addEventListener('change', runBacktest);
+  runBacktest();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,166 @@
+# version: "3.9"
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./infra/initdb:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    restart: unless-stopped
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: bitnami/kafka:3.7
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+    ports:
+      - "9092:9092"
+
+  candle-api:
+    build: ./apps/candle-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  market-ingestor:
+    build: ./apps/market-ingestor
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      BINANCE_SYMBOLS: ${BINANCE_SYMBOLS}
+      BINANCE_TIMEFRAMES: ${BINANCE_TIMEFRAMES}
+    depends_on:
+      - kafka
+
+  candle-aggregator:
+    build: ./apps/candle-aggregator
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  market-gateway:
+    build: ./apps/market-gateway
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      KLINES_TOPIC: klines_raw
+    depends_on:
+      kafka:
+        condition: service_started
+    ports:
+      - "8001:8001"
+  backfill-job:
+    build: ./apps/backfill-job
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_HOST: postgres
+      BINANCE_SYMBOLS: ${BINANCE_SYMBOLS}
+      BINANCE_TIMEFRAMES: ${BINANCE_TIMEFRAMES}
+      BACKFILL_MAX_BARS: ${BACKFILL_MAX_BARS:-2000}
+      BACKFILL_PER_CALL: ${BACKFILL_PER_CALL:-1000}
+      BACKFILL_SLEEP_MS: ${BACKFILL_SLEEP_MS:-200}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"   # chạy xong là thoát (không lặp)
+
+  news-crawler:
+    build: ./apps/news-crawler
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      NEWS_RSS: ${NEWS_RSS:-https://feeds.a.dj.com/rss/RSSMarketsMain.xml,https://www.coindesk.com/arc/outboundfeeds/rss/,https://cointelegraph.com/rss,https://vnexpress.net/rss/kinh-doanh.rss}
+      NEWS_TOPIC: ${NEWS_TOPIC:-news_raw}
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
+  sentiment-service:
+    build: ./apps/sentiment-service
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+      NEWS_TOPIC: ${NEWS_TOPIC:-news_raw}
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  news-api:
+    build: ./apps/news-api
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:${POSTGRES_PORT}/${POSTGRES_DB}
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backtest-api:
+    build: ./apps/backtest-api
+    environment:
+      CANDLE_API_URL: http://candle-api:8000
+      NEWS_API_URL:   http://news-api:8100
+    depends_on:
+      candle-api:
+        condition: service_started
+      news-api:
+        condition: service_started
+    ports:
+      - "8300:8300"
+    restart: unless-stopped
+
+  realtime-api:
+    build: ./apps/realtime-api
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER:-kafka:9092}
+      TOPIC_RAW: klines_raw
+      GROUP_ID: realtime-api-1
+    depends_on:
+      - kafka
+    ports:
+      - "8400:8400"
+    restart: unless-stopped
+
