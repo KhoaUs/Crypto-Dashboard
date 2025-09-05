@@ -2,6 +2,18 @@ import numpy as np
 import pandas as pd
 import requests
 from typing import Dict, List, Tuple, Optional
+import jwt
+import os
+import datetime as dt
+
+# Lấy secret chung qua ENV; nếu bạn chưa bật auth cho candle-api thì header này vô hại
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
+ALGO = "HS256"
+
+def _service_access_token() -> str:
+    """Tạo JWT nội bộ cho service→service; hạn 10 phút."""
+    exp = dt.datetime.utcnow() + dt.timedelta(minutes=10)
+    return jwt.encode({"sub": "backtest-service", "role": "ADMIN", "exp": exp}, JWT_SECRET, algorithm=ALGO)
 
 def load_candles(candle_api: str, symbol: str, tf: str, start: Optional[int], end: Optional[int], limit: int) -> pd.DataFrame:
     """
@@ -10,16 +22,27 @@ def load_candles(candle_api: str, symbol: str, tf: str, start: Optional[int], en
     - Nếu không, dùng limit gần nhất.
     """
     url = f"{candle_api}/candles?symbol={symbol}&tf={tf}&limit={limit}"
-    arr = requests.get(url, timeout=10).json()
+
+    # Quan trọng: gắn Bearer token để vượt qua bảo vệ JWT của candle-api
+    headers = {"Authorization": f"Bearer {_service_access_token()}"}
+
+    resp = requests.get(url, timeout=10, headers=headers)
+    # Nếu candle-api trả lỗi (vd 401/403/500), raise luôn để bạn thấy nguyên nhân thật trong log
+    resp.raise_for_status()
+
+    arr = resp.json()
     df = pd.DataFrame(arr)
     if df.empty:
         return df
+
     df = df.rename(columns={"ts":"time","o":"open","h":"high","l":"low","c":"close","v":"volume"})
     df = df[["time","open","high","low","close","volume"]].copy()
+
     if start is not None:
         df = df[df["time"] >= start]
     if end is not None:
         df = df[df["time"] <= end]
+
     df = df.sort_values("time").reset_index(drop=True)
     return df
 

@@ -1,0 +1,125 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Login</title>
+<style>
+body {
+  font-family: 'Segoe UI', Arial, sans-serif;
+  background: linear-gradient(135deg, #e0e7ff 0%, #f3e8ff 100%);
+  min-height: 100vh;
+  margin: 0;
+}
+.center-box {
+  max-width: 370px;
+  margin: 60px auto;
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 6px 32px 0 rgba(80, 0, 120, 0.10);
+  padding: 32px 28px 22px 28px;
+}
+h2 {
+  text-align: center;
+  color: #7c3aed;
+  margin-bottom: 28px;
+  letter-spacing: 1px;
+}
+form input {
+  width: 100%;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  border: 1.5px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 1rem;
+  transition: border 0.2s;
+  background: #f9fafb;
+}
+form input:focus {
+  border: 1.5px solid #7c3aed;
+  outline: none;
+  background: #fff;
+}
+button {
+  width: 100%;
+  padding: 12px 0;
+  background: linear-gradient(90deg, #7c3aed 60%, #a78bfa 100%);
+  color: #fff;
+  font-weight: 600;
+  font-size: 1.08rem;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px 0 rgba(124, 58, 237, 0.10);
+  transition: background 0.2s, transform 0.1s;
+}
+button:hover {
+  background: linear-gradient(90deg, #6d28d9 60%, #a78bfa 100%);
+  transform: translateY(-2px) scale(1.02);
+}
+.status {
+  font-size: 13px;
+  color: #666;
+  margin-top: 10px;
+  min-height: 18px;
+  text-align: center;
+}
+.link {
+  display: block;
+  text-align: center;
+  margin-top: 18px;
+  color: #7c3aed;
+  text-decoration: none;
+  font-size: 0.98rem;
+  transition: color 0.2s;
+}
+.link:hover {
+  color: #4c1d95;
+  text-decoration: underline;
+}
+</style>
+
+<div class="center-box">
+  <h2>Đăng nhập</h2>
+  <form id="f">
+    <input id="email" type="email" placeholder="Email" required>
+    <input id="pw" type="password" placeholder="Mật khẩu" required>
+    <button id="btn" type="submit">Đăng nhập</button>
+    <div id="msg" class="status">Idle</div>
+  </form>
+  <a class="link" href="register.html">Tạo tài khoản mới</a>
+</div>
+
+<script>
+const AUTH = 'http://localhost:8080';
+
+const form = document.getElementById('f');
+const emailEl = document.getElementById('email');
+const pwEl    = document.getElementById('pw');
+const btn     = document.getElementById('btn');
+const msg     = document.getElementById('msg');
+
+form.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  btn.disabled = true; msg.textContent = 'Đang đăng nhập...';
+  try{
+    const r = await fetch(AUTH+'/auth/login', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email: emailEl.value.trim(), password: pwEl.value })
+    });
+    if(!r.ok){
+      const err = await r.text();
+      msg.textContent = 'Đăng nhập thất bại: ' + (err || r.status);
+      btn.disabled = false;
+      return;
+    }
+    const data = await r.json();
+    localStorage.setItem('access', data.access_token);
+    localStorage.setItem('refresh', data.refresh_token);
+    localStorage.setItem('me', JSON.stringify(data.user));
+    msg.textContent = 'Thành công! Đang chuyển hướng...';
+    setTimeout(()=>location.href='index.html', 500);
+  }catch(err){
+    msg.textContent = 'Lỗi mạng';
+    btn.disabled = false;
+  }
+});
+</script>

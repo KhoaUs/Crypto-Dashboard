@@ -1,11 +1,15 @@
-import os
+import os,jwt
 import asyncpg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException,Depends, Header
 from fastapi.responses import JSONResponse
 from typing import Optional
 
 from fastapi.middleware.cors import CORSMiddleware
 
+
+# Các bạn có thể chỉnh sửa lại JWT_SECRET để tăng tính bảo mật nha
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
+ALGO = "HS256"
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/market")
 
 app = FastAPI(title="Candle API")
@@ -21,6 +25,17 @@ app.add_middleware(
 
 pool: Optional[asyncpg.Pool] = None
 
+async def require_auth(authorization: str | None = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ",1)[1].strip()
+    try:
+        jwt.decode(token, JWT_SECRET, algorithms=[ALGO])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
 @app.on_event("startup")
 async def startup():
     global pool
@@ -36,7 +51,7 @@ async def health():
     return {"status": "ok"}
 
 @app.get("/candles")
-async def candles(symbol: str, tf: str, limit: int = 1000):
+async def candles(symbol: str, tf: str, limit: int = 1000, user=Depends(require_auth)):
     symbol = symbol.upper()
     tf = tf.lower()
     if limit < 1 or limit > 5000:
@@ -54,3 +69,4 @@ async def candles(symbol: str, tf: str, limit: int = 1000):
         rows = await conn.fetch(q, symbol, tf, limit)
     data = [dict(r) for r in reversed(rows)]
     return JSONResponse(content=data)
+

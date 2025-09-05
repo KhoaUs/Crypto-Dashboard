@@ -1,4 +1,5 @@
-import os
+import os, jwt
+from urllib.parse import parse_qs
 import json
 import asyncio
 from typing import Dict, Set, Tuple
@@ -8,7 +9,8 @@ import uvloop
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 TOPIC = os.getenv("KLINES_TOPIC", "klines_raw")
-
+JWT_SECRET = os.getenv("JWT_SECRET","dev-secret-change-me")  # Đổi này lại cho bảo mật nghen
+ALGO = "HS256"
 app = FastAPI(title="Market Gateway (WS)")
 
 # Hub: (symbol, timeframe) -> set of subscriber queues
@@ -82,6 +84,16 @@ async def ws_endpoint(ws: WebSocket, symbol: str, tf: str):
       {symbol, tf, t, o, h, l, c, closed}
     """
     await ws.accept()
+    # parse token
+    qs = parse_qs(ws.url.query)
+    token = (qs.get("token") or [None])[0]
+    if not token:
+        await ws.close(code=4401); return
+    try:
+        jwt.decode(token, JWT_SECRET, algorithms=[ALGO])
+    except Exception:
+        await ws.close(code=4401); return
+
     s_key = key(symbol, tf)
     q: asyncio.Queue = asyncio.Queue(maxsize=1000)
     Subs.setdefault(s_key, set()).add(q)
