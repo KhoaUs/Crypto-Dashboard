@@ -1,30 +1,67 @@
-# AI Finance Stack — Minimal MVD
+# AI Finance Dashboard
 
-This is a minimal end-to-end skeleton to ingest Binance klines -> Kafka -> TimescaleDB,
-and serve candles via a FastAPI service. It's the first deployable slice of the architecture.
+Hệ thống **phân tích & dự đoán tài chính** dùng dữ liệu thị trường, tin tức và AI.  
+Bao gồm các thành phần microservice (Docker Compose) và giao diện web realtime.
 
-## Services
-- **postgres (TimescaleDB)**: stores OHLCV
-- **zookeeper + kafka**: message bus
-- **market-ingestor (Node.js)**: subscribes Binance WS (symbols/timeframes) and publishes `klines_raw` to Kafka
-- **candle-aggregator (Python worker)**: consumes `klines_raw`, upserts closed candles to Timescale
-- **candle-api (FastAPI)**: serves `GET /candles?symbol=BTCUSDT&tf=1m&limit=1000`
+---
 
-## Quick start
-1. Copy env:
-   ```bash
-   cp .env.example .env
-   ```
-2. Start:
-   ```bash
-   docker compose up --build
-   ```
-3. Check health:
-   - Candle API: http://localhost:8000/health
-   - Query candles: http://localhost:8000/candles?symbol=BTCUSDT&tf=1m&limit=100
+## Tính năng chính
 
-> Note: Some ISPs may block Binance WS. If ingestor can't connect, try a different network/VPN.
+- **Dashboard realtime**: hiển thị nến (candlestick) và chỉ báo (MA30, MA90).
+- **Tin tức & sentiment**: crawler, sentiment service, và API phục vụ dashboard.
+- **Backtest**:  
+  - Chiến lược MA cross ± sentiment filter.  
+  - Kết quả gồm số lệnh, winrate, **PnL (lãi/lỗ)** và **Equity curve (đường vốn)**, Sharpe ratio.  
+- **Quản lý tài khoản**:
+  - Đăng ký / đăng nhập / đăng xuất (JWT).
+  - Đổi mật khẩu (rule: ≥8 ký tự, chữ hoa, chữ thường, số, ký tự đặc biệt).
+  - Quản lý user (Admin): phân quyền, vô hiệu hoá, reset mật khẩu.  
+  - *(Chưa hỗ trợ xóa user — có thể thao tác thủ công trong DB).*
 
-## Schema
-- `ohlcv(symbol TEXT, timeframe TEXT, ts TIMESTAMPTZ, o NUMERIC, h NUMERIC, l NUMERIC, c NUMERIC, v NUMERIC)`
-Primary key: (symbol, timeframe, ts). Timescale hypertable on `ts`.
+---
+
+## Cài đặt & Chạy
+
+### Yêu cầu
+- Docker & Docker Compose
+- Git
+
+### Clone repo
+```bash
+git clone https://github.com/KhoaUs/Crypto-Dashboard
+cd Crypto-Dashboard
+```
+
+### Cấu hình `.env`
+Copy file mẫu rồi chỉnh sửa giá trị phù hợp:
+```bash
+cp .env.example .env
+```
+
+### Build & Run
+```bash
+docker compose up --build
+```
+
+### Truy cập
+- Dashboard: mở `index.html` bằng Live Server (VD: http://127.0.0.1:5500/index.html).
+- Auth API: http://localhost:8080  
+- Candle API: http://localhost:8000  
+- News API: http://localhost:8100  
+- Backtest API: http://localhost:8300  
+- Realtime API (WS): ws://localhost:8400/ws
+
+---
+
+## Bảo mật
+
+- Mật khẩu user hash bằng **bcrypt**.  
+- Rule mật khẩu: tối thiểu 8 ký tự, phải có chữ hoa, thường, số, ký tự đặc biệt.  
+- JWT với thời hạn ngắn (15 phút) + refresh token.  
+- Admin có quyền phân quyền, disable, reset password.  
+
+---
+
+
+## License
+MIT Lisence
