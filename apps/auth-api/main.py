@@ -11,11 +11,15 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@postgre
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 ACCESS_MIN = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
 REFRESH_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
-DEFAULT_RESET_PASSWORD = os.getenv("DEFAULT_RESET_PASSWORD", "changeme123")
+DEFAULT_RESET_PASSWORD = os.getenv("DEFAULT_RESET_PASSWORD", "Changeme123@")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 
 ALGO = "HS256"
+
+# Password policy: ≥8 ký tự, có chữ thường, HOA, số, ký tự đặc biệt
+PASSWORD_REGEX = re.compile(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$')
+
 
 app = FastAPI(title="Auth API")
 
@@ -94,6 +98,18 @@ def require_auth(roles: Optional[list[str]]=None):
             raise HTTPException(status_code=401, detail="Invalid token")
     return dep
 
+def validate_password_strength(pw: str):
+    """
+    Ném 400 nếu mật khẩu không đạt yêu cầu.
+    - ít nhất 8 ký tự
+    - có chữ thường, chữ HOA, số, ký tự đặc biệt
+    """
+    if not PASSWORD_REGEX.match(pw or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be ≥ 8 chars and include lowercase, uppercase, number, and special character."
+        )
+    
 @app.on_event("startup")
 async def startup():
     global pool
@@ -110,8 +126,7 @@ async def health():
 
 @app.post("/auth/register")
 async def register(body: RegisterIn):
-    if len(body.password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+    validate_password_strength(body.password)
     async with pool.acquire() as conn:
         if await get_user_by_email(conn, body.email.lower()):
             raise HTTPException(409, "Email already registered")
@@ -185,8 +200,7 @@ async def me(user=Depends(require_auth())):
 
 @app.post("/auth/change-password")
 async def change_password(body: ChangePwIn, user=Depends(require_auth())):
-    if len(body.new_password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+    validate_password_strength(body.password)
     uid = uuid.UUID(user["sub"])
     async with pool.acquire() as conn:
         u = await get_user_by_id(conn, uid)

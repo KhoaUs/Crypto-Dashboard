@@ -44,13 +44,13 @@
 <body>
 <div class="app">
   <div class="toolbar">
-    <span>Symbol:</span>
+    <label for="symbol">Symbol:</label>
     <select id="symbol">
       <option>BTCUSDT</option>
       <option>ETHUSDT</option>
       <option>ADAUSDT</option>
     </select>
-    <span>TF:</span>
+    <label for="tf">TF:</label>
     <select id="tf">
       <option value="1m">1m</option>
       <option value="5m">5m</option>
@@ -80,9 +80,12 @@
         <div class="news-controls">
           <strong>Tin mới</strong>
           <input id="news-q" placeholder="tìm: btc, eth, rate..." />
+          <label for="news-sym">Symbol:</label>
           <select id="news-sym">
             <option value="">(all)</option>
-            <option>BTC</option><option>ETH</option><option>ADA</option>
+            <option>BTC</option>
+            <option>ETH</option>
+            <option>ADA</option>
           </select>
           <button id="news-load">Load</button>
           <span id="news-status" class="status">Idle</span>
@@ -247,8 +250,6 @@
   });
   ro.observe(chartEl);
 
-  let ws=null, candles=[];
-
   function setStatus(s){ statusEl.textContent = s; }
   function upsertCandle(c){
     if (candles.length && candles.at(-1).time === c.time){
@@ -267,17 +268,6 @@
     }
     return out;
   }
-
-  // async function myApiKlines(symbol, interval, limit=1000){
-  //   const url = `${CANDLE_API}/candles?symbol=${symbol}&tf=${interval}&limit=${limit}`;
-  //   const r = await fetch(url, { headers:{ Authorization:'Bearer '+access() }});
-  //   if(!r.ok){
-  //     if(r.status===401){ await ensureLogin(); return myApiKlines(symbol, interval, limit); }
-  //     throw new Error('candles fetch failed');
-  //   }
-  //   const arr = await r.json();
-  //   return arr.map(k => ({ time:k.ts, open:k.o, high:k.h, low:k.l, close:k.c }));
-  // }
 
   function normalizeBarLike(obj){
     // Ưu tiên đọc các key phổ biến
@@ -304,61 +294,109 @@
   }
   
   async function myApiKlines(symbol, interval, limit=1000){
-  const url = `${CANDLE_API}/candles?symbol=${symbol}&tf=${interval}&limit=${limit}`;
-  const r = await fetch(url, { headers:{ Authorization:'Bearer '+access() }});
-  const arr = await r.json();
-  const mapped = arr.map(k => normalizeBarLike({ ts:k.ts, o:k.o, h:k.h, l:k.l, c:k.c }))
-                    .filter(Boolean);
-  // đảm bảo sort tăng dần theo time
-  mapped.sort((a,b)=>a.time-b.time);
-  return mapped;
-}
+    const url = `${CANDLE_API}/candles?symbol=${symbol}&tf=${interval}&limit=${limit}`;
+    const r = await fetch(url, { headers:{ Authorization:'Bearer '+access() }});
+    const arr = await r.json();
+    const mapped = arr.map(k => normalizeBarLike({ ts:k.ts, o:k.o, h:k.h, l:k.l, c:k.c }))
+                      .filter(Boolean);
+    // đảm bảo sort tăng dần theo time
+    mapped.sort((a,b)=>a.time-b.time);
+    return mapped;
+  }
 
-  function connectWS(symbol, interval){
-    const url = `${GATE}?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(interval)}&token=${encodeURIComponent(access())}`;
-    if (ws) { try{ ws.close(1000,'reconnect'); }catch(_){} }
-    ws = new WebSocket(url);
-    let timer;
+  let ws = null, candles = [];
+  let session = 0;
+  let wsReconnectTimer = null;
+  let keepAliveTimer = null;
+  let backoff = 1000;
 
-    ws.onopen  = () => { clearTimeout(timer); setStatus('WS connected'); };
-    ws.onclose = () => {
-      setStatus('WS disconnected – reconnecting…');
-      timer = setTimeout(() => connectWS(symbol, interval), 3000);
+  function clearTimers(){
+    if (wsReconnectTimer){ clearTimeout(wsReconnectTimer); wsReconnectTimer=null; }
+    if (keepAliveTimer){ clearInterval(keepAliveTimer); keepAliveTimer=null; }
+  }
+
+  function connectWS(symbol, interval, mySession){
+    const t = access();
+    const url = `${GATE}?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(interval)}&token=${encodeURIComponent(t||'')}`;
+
+    // k đóng socket hiện tại ngay lập tức
+    // Chỉ dọn timer; socket cũ nếu còn sẽ tự đóng sau.
+    clearTimers();
+
+    const sock = new WebSocket(url);  // dùng biến cục bộ, chưa gán vào ws
+
+    sock.onopen = () => {
+      // Nếu phiên đã đổi, đóng chính "sock" này và rời
+      if (mySession !== session) { try{ sock.close(1000,'stale'); }catch(_){} return; }
+
+      // Tới đây là socket hợp lệ cho phiên hiện tại
+      // Đóng ws cũ nếu nó đã OPEN; nếu đang CONNECTING thì cứ để nó tự chết
+      if (ws && ws !== sock && ws.readyState === 1) { try{ ws.close(1000,'switch'); }catch(_){} }
+
+      ws = sock; // chính thức dùng socket mới
+      setStatus('WS connected');
+      backoff = 1000;
+
+      // keepalive app-level (nếu gateway cần)
+      keepAliveTimer = setInterval(() => {
+        if (mySession !== session || !ws || ws.readyState !== 1) return;
+        try { ws.send(JSON.stringify({type:'ping'})); } catch(_) {}
+      }, 25000);
     };
-    ws.onerror = () => { /* bỏ qua; onclose sẽ lo reconnect */ };
 
-    // ws.onmessage = (ev) => {
-    //   const m = JSON.parse(ev.data);
-    //   if (m.type === 'ping') return;
-    //   const c = { time:m.time, open:m.open, high:m.high, low:m.low, close:m.close };
-    //   series.update(c); upsertCandle(c);
-    //   const s30=calcSMA(candles,30).slice(-1)[0]; if(s30) sma30Series.update(s30);
-    //   const s90=calcSMA(candles,90).slice(-1)[0]; if(s90) sma90Series.update(s90);
-    // };
+    sock.onmessage = (ev) => {
+      if (mySession !== session || sock !== ws) return; // chỉ xử lý nếu là socket hiện tại & đúng phiên
+      let m; try{ m = JSON.parse(ev.data); }catch{ return; }
+      if (m.type === 'ping'){ try{ ws.send(JSON.stringify({type:'pong'})); }catch(_){} return; }
+      if (m.symbol && m.symbol !== symbolSel.value) return; // lọc sai symbol (nếu gateway gửi kèm)
 
-    ws.onmessage = (ev) => {
-      const m = JSON.parse(ev.data);
-      if (m.type === 'ping') return;
       const c = normalizeBarLike(m);
-      if (!c) return; // bỏ bar xấu
+      if (!c) return;
       series.update(c); upsertCandle(c);
       const s30=calcSMA(candles,30).slice(-1)[0]; if(s30) sma30Series.update(s30);
       const s90=calcSMA(candles,90).slice(-1)[0]; if(s90) sma90Series.update(s90);
     };
+
+    sock.onclose = (ev) => {
+      // Chỉ reconnect nếu "sock" này vẫn là socket hiện tại & đúng phiên
+      if (keepAliveTimer){ clearInterval(keepAliveTimer); keepAliveTimer=null; }
+      if (mySession !== session || sock !== ws) return;
+
+      setStatus(`WS disconnected (${ev.code}) ${ev.reason||''} – reconnecting…`);
+      wsReconnectTimer = setTimeout(() => {
+        connectWS(symbol, interval, mySession);
+        backoff = Math.min(Math.floor(backoff * 1.7), 15000);
+      }, backoff);
+    };
+
+    sock.onerror = () => { /* để onclose quyết định reconnect nếu cần */ };
   }
 
+
   async function load(symbol, interval){
+    const mySession = ++session;
     setStatus('Loading history…');
-    if(ws){ try{ws.close()}catch{} ws=null; }
-    candles=[];
+
+    // Dọn timer; KHÔNG ép close ws nếu đang CONNECTING
+    clearTimers();
+
+    // reset dữ liệu chart
+    candles = [];
     series.setData([]); sma30Series.setData([]); sma90Series.setData([]);
-    const hist=await myApiKlines(symbol, interval, 1000);
-    candles=hist;
-    series.setData(candles);
-    sma30Series.setData(calcSMA(candles,30));
-    sma90Series.setData(calcSMA(candles,90));
-    setStatus('History loaded. Connecting WS…');
-    connectWS(symbol, interval);
+
+    try{
+      const hist = await myApiKlines(symbol, interval, 1000);
+      if (mySession !== session) return;
+      candles = hist;
+      series.setData(candles);
+      sma30Series.setData(calcSMA(candles,30));
+      sma90Series.setData(calcSMA(candles,90));
+      setStatus('History loaded. Connecting WS…');
+      connectWS(symbol, interval, mySession);
+    }catch(e){
+      if (e?.name === 'AbortError') return;
+      setStatus('Load failed'); console.error(e);
+    }
   }
 
   symbolSel.addEventListener('change', ()=>load(symbolSel.value, tfSel.value));
