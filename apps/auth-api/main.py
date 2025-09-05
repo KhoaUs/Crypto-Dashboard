@@ -200,7 +200,7 @@ async def me(user=Depends(require_auth())):
 
 @app.post("/auth/change-password")
 async def change_password(body: ChangePwIn, user=Depends(require_auth())):
-    validate_password_strength(body.password)
+    validate_password_strength(body.new_password)
     uid = uuid.UUID(user["sub"])
     async with pool.acquire() as conn:
         u = await get_user_by_id(conn, uid)
